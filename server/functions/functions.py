@@ -6,7 +6,7 @@ from psycopg2 import sql, errors
 
 #==========================================================================================================
 
-def split_csv_to_blocks(input_path: str, block_size: int =   1024 * 1024) -> int:
+def split_csv_to_blocks(input_path: str, block_size: int =   10  * 1024 * 1024) -> int:
     """
     Split a CSV file into multiple blocks, each no larger than block_size bytes (including header).
     - Các block sẽ được lưu trong thư mục 'blocks' nằm trong cùng thư mục chứa file gốc.

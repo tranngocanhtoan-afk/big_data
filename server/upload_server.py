@@ -4,8 +4,9 @@ import os
 import shutil
 import socket
 import json
-from flask import Flask, request, render_template_string, jsonify
+from flask import Flask, request, render_template_string, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
+from flask import send_from_directory
 
 from functions.functions import (
     split_csv_to_blocks,
@@ -248,16 +249,48 @@ def compute():
         msg = {'type':'compute','file':db_base}
         s.sendall(json.dumps(msg).encode())
         resp = s.recv(1024)
-        s.close()
+        s.close() 
     except Exception as e:
         return jsonify({'status':'error','error':str(e)}),500
 
     return jsonify({'status':'ok','namenode':resp.decode()})
 
+# --- Route phục vụ download block --from flask import send_from_directory
+
+@app.route('/download/<filename>/blocks/<block_id>')
+def download_block(filename, block_id):
+    # filename: tên folder, VD: alogs.csv
+    # blockfile: VD: alogs_block1.csv
+    blocks_dir = os.path.join(UPLOAD_ROOT, filename, 'blocks')
+    print (blocks_dir)
+    return send_from_directory(blocks_dir, block_id, as_attachment=True)
+
+
+@app.route('/upload_block', methods=['POST'])
+def upload_block():
+    file = request.files.get('file')
+    file_base = request.form.get('file_base')     # Ví dụ: 'alogs'
+    block_id  = request.form.get('block_id')      # Ví dụ: 'alogs_block1.csv'
+
+    if not file or not file_base or not block_id:
+        return jsonify({"status": "error", "msg": "Missing parameters"}), 400
+
+    # ===> ĐƯỜNG DẪN MỚI: server/data/results/alogs/alogs_block1.csv
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    results_dir = os.path.join(base_dir, "data", "results", file_base)
+    os.makedirs(results_dir, exist_ok=True)
+    save_path = os.path.join(results_dir, block_id)
+    file.save(save_path)
+
+    return jsonify({"status": "success", "msg": f"Uploaded {block_id} to {file_base}"})
+
+
+
 if __name__=='__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
 
 
-@app.route('/download/<file>/<subdir>/<block>')
-def download(file, subdir, block):
-    return send_file(f"data/uploads/{file}/{subdir}/{block}", as_attachment=True)
+
+
+
+

@@ -2,11 +2,8 @@ import sys
 import time
 import socket
 import threading
-from functions_datanode import (
-    get_local_node_id,
-    send_message,
-    start_task_listener_bg
-)
+from functions_datanode import *
+import requests
 
 # CLI: python datanode.py [<namenode_host>] [<namenode_port>] [<task_listen_port>]
 NAMENODE_HOST      = sys.argv[1] if len(sys.argv) > 1 else '127.0.0.1'
@@ -31,11 +28,22 @@ def main():
         resp = send_message(sock, {"type": "register", "id": node_id})
         print(f"[DataNode] register → {resp}")
 
+        download_block(server_ip ="192.168.1.14", 
+                   server_port = 5000, 
+                   file_base = "alogs", 
+                   block_id = "alogs_block1.csv", 
+                   dest_dir = os.path.join("task", "alogs.csv"))
+
         # Heartbeat loop
         while True:
             time.sleep(HEARTBEAT_INTERVAL)
             resp = send_message(sock, {"type": "heartbeat", "id": node_id})
             print(f"[DataNode] heartbeat → {resp}")
+        
+        
 
+        
 if __name__ == '__main__':
     main()
+    
+

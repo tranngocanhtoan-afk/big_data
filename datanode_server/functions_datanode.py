@@ -45,10 +45,11 @@ def download_block(server_ip: str,
     """
     os.makedirs(dest_dir, exist_ok=True)
     url = f"http://{server_ip}:{server_port}/download/{file_base}.csv/blocks/{block_id}"
-    local_path = os.path.join(dest_dir, block_id)
+    local_path = os.path.join(dest_dir, file_base)
     try:
-        resp = requests.get(url, stream=True, timeout=20)
+        resp = requests.get(url, stream=True )
         if resp.status_code == 200:
+            print(f"[DataNode] Downloaded block {block_id} → {local_path}") 
             with open(local_path, 'wb') as f:
                 for chunk in resp.iter_content(32 * 1024):
                     if chunk:
@@ -74,8 +75,8 @@ def handle_message(msg: dict):
 
     # Các field: 'role', 'block_id', 'file'
     role      = msg.get('role')
-    block_id  = msg.get('block_id')
-    file_base = msg.get('file')
+    block_id  = msg.get('block_id')  #alogs_block1.csv
+    file_base = msg.get('file')    #alogs
 
     if not all([role, block_id, file_base]):
         print(f"[DataNode] Malformed task message: {msg}")
@@ -88,10 +89,10 @@ def handle_message(msg: dict):
             server_ip=UPLOAD_SERVER_HOST,
             server_port=UPLOAD_SERVER_PORT,
             file_base=file_base,
-            block_id=block_id,
+            block_id=block_id,   
             dest_dir=dest_dir
         )
-        # TODO: xử lý data sau khi download tại đây
+        # TODO: xử lý data sau khi download tại đây, gọi hàm xử lý data từ functions_datanode.py, nhớ update cái status là free và ghi kết quả vào file txt nha
     elif role == 'storage':
         # Tải về thư mục 'storage/<file_base>/'
         dest_dir = os.path.join('storage', file_base)
@@ -134,3 +135,24 @@ def start_task_listener_bg(listen_host='0.0.0.0', listen_port=7000):
     t = threading.Thread(target=task_listener, args=(listen_host, listen_port), daemon=True)
     t.start()
     return t
+
+
+def upload_block_to_server(server_ip, server_port, file_base, block_id, block_path):
+    """
+    Gửi block_id (file CSV) lên Upload-Server.
+    - server_ip/server_port: địa chỉ server Flask
+    - file_base: tên file gốc (không .csv)
+    - block_id: tên file block (VD: alogs_block1.csv)
+    - block_path: đường dẫn tới file block trên máy DataNode
+    """
+    url = f"http://{server_ip}:{server_port}/upload_block"
+    with open(block_path, 'rb') as f:
+        files = {'file': (block_id, f, 'text/csv')}
+        data = {'file_base': file_base, 'block_id': block_id}
+        resp = requests.post(url, files=files, data=data, timeout=20)
+    if resp.status_code == 200:
+        print(f"[DataNode] Uploaded {block_id} to server")
+        return True
+    else:
+        print(f"[DataNode] Upload failed: {resp.text}")
+        return False

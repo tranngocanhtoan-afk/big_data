@@ -142,8 +142,10 @@ def assign_task_auto(task: str) -> bool:
     và cập nhật leader/followers/status trên bảng block-manager.
     Trả về True nếu thành công, False nếu không có node free.
     """
+    print("run assigntask auto")
     # 1) Kiểm tra free node
     if not has_free_node():
+        print("no free node")
         return False
 
     # 2) Chọn leader & followers
@@ -214,8 +216,6 @@ def assign_task_auto(task: str) -> bool:
         conn_file.close()
 
 
-
-
     send_to_datanode(leader, {
         'type': 'task',
         'role': 'leader',
@@ -259,3 +259,79 @@ def send_to_datanode(node_id: str, payload: dict):
         s.connect((host, port))
         s.sendall(json.dumps(payload).encode('utf-8'))
         # (nếu DataNode cần ACK, bạn có thể đọc lại ở đây)
+
+
+def get_table_name_from_block_id(block_id: str) -> str:
+    """
+    Chuyển block_id ('alogs_block1.csv') -> table_name ('alogs')
+    """
+    file_base = block_id.rsplit('.csv', 1)[0].rsplit('_block', 1)[0]
+    table_name = file_base.replace('.', '_')
+    return table_name
+
+
+def reassign_leader_on_disconnect(old_leader_id: str):
+    """
+    Khi node leader disconnect, chuyển quyền leader cho follower đầu tiên,
+    cập nhật lại bảng block-manager và active_node_manager.
+    """
+    conn_meta = psycopg2.connect(**DB)
+    try:
+        with conn_meta.cursor() as cur:
+            # 1. Lấy block node này đang làm leader (task)
+            cur.execute("""
+                SELECT task FROM active_node_manager
+                 WHERE node_id = %s
+            """, (old_leader_id,))
+            row = cur.fetchone()
+            if not row or not row[0]:
+                print(f"Node {old_leader_id} không có task để reassign.")
+                return
+            block_id = row[0]
+
+            # 2. Xác định table
+            table = get_table_name_from_block_id(block_id)
+
+            # 3. Lấy followers hiện tại
+            cur.execute(
+                sql.SQL('SELECT followers FROM {} WHERE block_id = %s').format(
+                    sql.Identifier(table)),
+                (block_id,))
+            result = cur.fetchone()
+            if not result or not result[0]:
+                print(f"Block {block_id} không có followers.")
+                return
+            followers = result[0]
+            if not followers:
+                print(f"Block {block_id} không có followers.")
+                return
+
+            # 4. Chọn follower đầu tiên làm leader mới
+            new_leader = followers[0]
+            new_followers = followers[1:] if len(followers) > 1 else []
+
+            # 5. Update block-manager table
+            cur.execute(
+                sql.SQL("""
+                    UPDATE {} SET leader = %s, followers = %s, status = 'processing'
+                     WHERE block_id = %s
+                """).format(sql.Identifier(table)),
+                (new_leader, new_followers, block_id)
+            )
+
+            # 6. Update active_node_manager cho leader mới
+            cur.execute(
+                "UPDATE active_node_manager SET task = %s WHERE node_id = %s",
+                (block_id, new_leader)
+            )
+            print(f"Reassigned leader of {block_id} to {new_leader}")
+
+            # 7. Optionally xóa task của node cũ (vì đã disconnect)
+            cur.execute(
+                "UPDATE active_node_manager SET task = 'free' WHERE node_id = %s",
+                (old_leader_id,)
+            )
+
+        conn_meta.commit()
+    finally:
+        conn_meta.close()
