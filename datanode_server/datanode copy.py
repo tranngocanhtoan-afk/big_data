@@ -6,12 +6,12 @@ import os
 import json
 from functions_datanode import *
 import requests
-from processdata import analyze_block
+
 
 # CLI: python datanode.py [<namenode_host>] [<namenode_port>] [<task_listen_port>]
 NAMENODE_HOST      = sys.argv[1] if len(sys.argv) > 1 else '127.0.0.1'
 NAMENODE_PORT      = int(sys.argv[2]) if len(sys.argv) > 2 else 5001
-TASK_LISTEN_PORT   = int(sys.argv[3]) if len(sys.argv) > 3 else 7000
+TASK_LISTEN_PORT   = int(sys.argv[3]) if len(sys.argv) > 3 else 7500
 HEARTBEAT_INTERVAL = 10  # seconds
 
 # Global variables for task processing

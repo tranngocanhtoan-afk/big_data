@@ -4,14 +4,17 @@ import os
 import shutil
 import socket
 import json
-from flask import Flask, request, render_template_string, jsonify, send_from_directory
+from flask import Flask, request, render_template_string, jsonify, send_from_directory, redirect, url_for, session
 from werkzeug.utils import secure_filename
 from flask import send_from_directory
 
 from functions.functions import (
     split_csv_to_blocks,
     create_database_and_user,
-    register_blocks_in_db
+    register_blocks_in_db,
+    create_users_table,
+    add_user,
+    verify_user
 )
 from config import DB, SUPERUSER, SUPERUSER_PW, NAMENODE_HOST, NAMENODE_PORT
 
@@ -19,6 +22,7 @@ import psycopg2
 from psycopg2 import sql
 
 app = Flask(__name__)
+app.secret_key = 'your-very-secret-key'  # Needed for session management
 
 # ─────────── Thiết lập thư mục upload ───────────
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -157,8 +161,134 @@ HTML = '''
 </html>
 '''
 
+# Ensure users table exists at startup
+create_users_table()
+
+# --- Login required decorator ---
+def login_required(f):
+    from functools import wraps
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'username' not in session:
+            return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    return decorated_function
+
+# --- Simple HTML login form ---
+LOGIN_HTML = '''
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Login</title>
+  <style>
+    body { background:#f0f2f5; font-family:Arial,sans-serif; color:#333; }
+    .container { max-width:400px; margin:60px auto; background:#fff; padding:30px; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.1); }
+    h1 { text-align:center; margin-bottom:20px; color:#444; }
+    input[type=text], input[type=password] { width:100%; padding:10px; margin-bottom:15px; border:1px solid #ccc; border-radius:4px; }
+    button { width:100%; padding:10px; background:#3498db; color:#fff; border:none; border-radius:4px; cursor:pointer; }
+    .error { color:#e74c3c; margin-bottom:10px; text-align:center; }
+    .success { color:#27ae60; margin-bottom:10px; text-align:center; }
+    .signup-link { display:block; text-align:center; margin-top:10px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Login</h1>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <form method="post">
+      <input type="text" name="username" placeholder="Username" required autofocus/>
+      <input type="password" name="password" placeholder="Password" required/>
+      <button type="submit">Login</button>
+    </form>
+    <a class="signup-link" href="/signup">Don't have an account? Sign up</a>
+  </div>
+</body>
+</html>
+'''
+
+# --- Login page (GET: form, POST: process) ---
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        if not username or not password:
+            return render_template_string(LOGIN_HTML, error='Username and password required')
+        if verify_user(username, password):
+            session['username'] = username
+            next_url = request.args.get('next')
+            return redirect(next_url or url_for('index'))
+        else:
+            return render_template_string(LOGIN_HTML, error='Invalid username or password')
+    return render_template_string(LOGIN_HTML, error=None)
+
+# --- Logout ---
+@app.route('/logout')
+def logout():
+    session.pop('username', None)
+    return redirect(url_for('login'))
+
+# --- Signup page (GET: form, POST: process) ---
+SIGNUP_HTML = '''
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Sign Up</title>
+  <style>
+    body { background:#f0f2f5; font-family:Arial,sans-serif; color:#333; }
+    .container { max-width:400px; margin:60px auto; background:#fff; padding:30px; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.1); }
+    h1 { text-align:center; margin-bottom:20px; color:#444; }
+    input[type=text], input[type=password] { width:100%; padding:10px; margin-bottom:15px; border:1px solid #ccc; border-radius:4px; }
+    button { width:100%; padding:10px; background:#27ae60; color:#fff; border:none; border-radius:4px; cursor:pointer; }
+    .error { color:#e74c3c; margin-bottom:10px; text-align:center; }
+    .success { color:#27ae60; margin-bottom:10px; text-align:center; }
+    .login-link { display:block; text-align:center; margin-top:10px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Sign Up</h1>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    {% if success %}<div class="success">{{ success }}</div>{% endif %}
+    <form method="post">
+      <input type="text" name="username" placeholder="Username" required autofocus/>
+      <input type="password" name="password" placeholder="Password" required/>
+      <button type="submit">Sign Up</button>
+    </form>
+    <a class="login-link" href="/login">Already have an account? Login</a>
+  </div>
+</body>
+</html>
+'''
+
+@app.route('/signup', methods=['GET', 'POST'])
+def signup():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        if not username or not password:
+            return render_template_string(SIGNUP_HTML, error='Username and password required', success=None)
+        success = add_user(username, password)
+        if success:
+            return render_template_string(SIGNUP_HTML, error=None, success='User registered! Please log in.')
+        else:
+            return render_template_string(SIGNUP_HTML, error='Username already exists', success=None)
+    return render_template_string(SIGNUP_HTML, error=None, success=None)
+
+# --- Protect all routes except login/signup ---
+@app.before_request
+def require_login():
+    allowed_routes = {'login', 'signup', 'static'}
+    if request.endpoint not in allowed_routes and not session.get('username'):
+        return redirect(url_for('login', next=request.url))
+
 # --- danh sách upload ---
 @app.route('/', methods=['GET'])
+@login_required
 def index():
     uploads = [d for d in sorted(os.listdir(UPLOAD_ROOT))
                if os.path.isdir(os.path.join(UPLOAD_ROOT, d))]
@@ -249,7 +379,7 @@ def compute():
         msg = {'type':'compute','file':db_base}
         s.sendall(json.dumps(msg).encode())
         resp = s.recv(1024)
-        s.close() 
+        s.close()
     except Exception as e:
         return jsonify({'status':'error','error':str(e)}),500
 
@@ -284,6 +414,11 @@ def upload_block():
 
     return jsonify({"status": "success", "msg": f"Uploaded {block_id} to {file_base}"})
 
+# --- User Signup ---
+# This route is now handled by the new signup function
+
+# --- User Login ---
+# This route is now handled by the new login function
 
 
 if __name__=='__main__':

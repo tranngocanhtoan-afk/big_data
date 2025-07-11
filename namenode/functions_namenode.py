@@ -2,6 +2,8 @@ import psycopg2
 from psycopg2 import pool, sql
 from config import DB
 import time
+import socket
+import json
 
 # ─── Connection Pool ───────────────────────────────────────────────────────────
 # Khởi connection pool khi module load
@@ -219,8 +221,8 @@ def assign_task_auto(task: str) -> bool:
     send_to_datanode(leader, {
         'type': 'task',
         'role': 'leader',
-        'block_id': task,
-        'file': file_base
+        'block_id': task,  #task la alogs_block1.csv
+        'file': file_base   #filebase o day la alogs
     })
     for nd in followers:
         send_to_datanode(nd, {
@@ -313,7 +315,7 @@ def reassign_leader_on_disconnect(old_leader_id: str):
             # 5. Update block-manager table
             cur.execute(
                 sql.SQL("""
-                    UPDATE {} SET leader = %s, followers = %s, status = 'processing'
+                    UPDATE {} SET leader = %s, followers = %s, status = 'pending'
                      WHERE block_id = %s
                 """).format(sql.Identifier(table)),
                 (new_leader, new_followers, block_id)
