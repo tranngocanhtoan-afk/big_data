@@ -4,10 +4,23 @@ import os
 import shutil
 import socket
 import json
+import importlib.util
 from flask import Flask, request, render_template_string, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
+import sys
 from flask import send_from_directory
 
+# Add parent directory to Python path BEFORE importing analyze_task
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
+# Now import from analyze_task
+try:
+    from analyze_task.aggerate import * 
+    print(" Successfully imported aggerate")
+except ImportError as e:
+    print(f"Import error: {e}")
 from functions.functions import (
     split_csv_to_blocks,
     create_database_and_user,
@@ -53,6 +66,8 @@ HTML = '''
     }
     .btn-delete { background:#e74c3c; color:#fff; }
     .btn-compute { background:#3498db; color:#fff; }
+    .btn-results { background:#f39c12; color:#fff; }
+    .btn-aggregate { background:#27ae60; color:#fff; }
     ul#fileList { margin-top:20px; }
     ul#fileList li {
       list-style: none; padding:8px; border-bottom:1px solid #ddd;
@@ -75,6 +90,8 @@ HTML = '''
           <span class="name">{{ fname }}</span>
           <button class="btn-compute" onclick="computeFile('{{fname}}')">Compute</button>
           <button class="btn-delete"  onclick="deleteFile('{{fname}}')">Delete</button>
+          <button class="btn-results" onclick="viewResults('{{fname}}')">View Results</button>
+          <button class="btn-aggregate" onclick="viewAggregate('{{fname}}')">Aggregate</button>
         </li>
       {% endfor %}
     </ul>
@@ -112,6 +129,16 @@ HTML = '''
         else
           alert(`Compute lỗi: ${res.error}`);
       });
+    }
+
+    function viewResults(name){
+      const fileBase = name.replace('.csv', '');
+      window.open(`/results/${fileBase}`, '_blank');
+    }
+
+    function viewAggregate(name){
+      const fileBase = name.replace('.csv', '');
+      window.open(`/aggregate/${fileBase}`, '_blank');
     }
 
     document.getElementById('uploadBtn').onclick = () => {
@@ -249,14 +276,13 @@ def compute():
         msg = {'type':'compute','file':db_base}
         s.sendall(json.dumps(msg).encode())
         resp = s.recv(1024)
-        s.close() 
+        s.close()
     except Exception as e:
         return jsonify({'status':'error','error':str(e)}),500
 
     return jsonify({'status':'ok','namenode':resp.decode()})
 
-# --- Route phục vụ download block --from flask import send_from_directory
-
+# --- Route phục vụ download block ---
 @app.route('/download/<filename>/blocks/<block_id>')
 def download_block(filename, block_id):
     # filename: tên folder, VD: alogs.csv
@@ -265,6 +291,262 @@ def download_block(filename, block_id):
     print (blocks_dir)
     return send_from_directory(blocks_dir, block_id, as_attachment=True)
 
+@app.route('/aggregate/<file_base>')
+def aggregate_results(file_base):
+    """
+    Aggregate all analysis results for a specific file and display them.
+    """
+    try:
+        # Path to results directory
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        results_dir = os.path.join(base_dir, "data", "results", file_base)
+        
+        if not os.path.exists(results_dir):
+            return jsonify({"status": "error", "msg": f"No results found for {file_base}"}), 404
+        
+        # Import the aggregate function
+        import sys
+        analyze_task_path = os.path.join(os.path.dirname(base_dir), 'analyze_task')
+        if analyze_task_path not in sys.path:
+            sys.path.insert(0, analyze_task_path)
+        
+        try:
+            from analyze_task.aggerate import aggregate_ensemble_results
+        except ImportError as e:
+            # Handle the relative import issue by creating a simple local implementation
+            import pandas as pd
+            import re
+            
+            def aggregate_ensemble_results(results_dir):
+                """
+                Local implementation to avoid import issues.
+                """
+                pattern = re.compile(
+                    r"(?P<column>.+?)\s+(?P<count>\d+\.?\d*)\s+(?P<mean>[-+]?\d*\.?\d+)\s+"
+                    r"(?P<std>[-+]?\d*\.?\d+)\s+(?P<min>[-+]?\d*\.?\d+)\s+(?P<q25>[-+]?\d*\.?\d+)\s+"
+                    r"(?P<q50>[-+]?\d*\.?\d+)\s+(?P<q75>[-+]?\d*\.?\d+)\s+(?P<max>[-+]?\d*\.?\d+)"
+                )
+                numeric_cols = ['count', 'mean', 'std', 'min', 'q25', 'q50', 'q75', 'max']
+                all_stats = []
+
+                for fname in os.listdir(results_dir):
+                    if not fname.endswith(".txt"):
+                        continue
+                    filepath = os.path.join(results_dir, fname)
+                    try:
+                        with open(filepath, "r", encoding="utf-8") as f:
+                            content = f.read()
+                        section = re.search(r"Basic statistics:(.*?)(?:Unique value statistics per column:|$)", content, re.S)
+                        if not section:
+                            continue
+                        for line in section.group(1).strip().split("\n"):
+                            line = line.strip()
+                            if not line or line.startswith(('count', 'mean', 'std')):
+                                continue
+                            match = pattern.match(line)
+                            if match:
+                                data = match.groupdict()
+                                data["source_file"] = fname
+                                all_stats.append(data)
+                    except Exception as file_error:
+                        print(f"Error processing file {fname}: {file_error}")
+                        continue
+
+                if not all_stats:
+                    raise ValueError("No valid stats found in any file.")
+
+                df = pd.DataFrame(all_stats)
+                try:
+                    df[numeric_cols] = df[numeric_cols].astype(float)
+                    ensemble = df.groupby("column")[numeric_cols].agg(["mean", "std"])
+                    
+                    # Flatten the column names (keep both mean and std columns)
+                    ensemble.columns = ['_'.join(col).strip() for col in ensemble.columns.values]
+                    ensemble = ensemble.dropna()
+                    
+                    return ensemble
+                except Exception as calc_error:
+                    print(f"Error in calculations: {calc_error}")
+                    # Return a simple summary if calculation fails
+                    return pd.DataFrame({"info": [f"Found {len(all_stats)} statistics from {len(set(s['source_file'] for s in all_stats))} files"]})
+            
+            print(f"[Server] Using local aggregate implementation due to import error: {e}")
+        # Aggregate the results
+        ensemble_results = aggregate_ensemble_results(results_dir)
+        
+        # Convert to HTML for display
+        html_table = ensemble_results.to_html(classes='table table-striped table-bordered')
+        
+        # Save ensemble results to CSV
+        ensemble_csv_path = os.path.join(results_dir, f"{file_base}_ensemble_results.csv")
+        ensemble_results.to_csv(ensemble_csv_path)
+        
+        # Create a simple HTML page to display results
+        aggregate_html = f'''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Aggregated Results for {file_base}</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                .container {{ max-width: 1200px; margin: 0 auto; }}
+                .header {{ background: #f8f9fa; padding: 20px; border-radius: 5px; margin-bottom: 20px; }}
+                .table {{ border-collapse: collapse; width: 100%; }}
+                .table th, .table td {{ padding: 8px 12px; text-align: left; border: 1px solid #ddd; }}
+                .table th {{ background-color: #f2f2f2; }}
+                .table-striped tbody tr:nth-of-type(odd) {{ background-color: rgba(0,0,0,.05); }}
+                .download-btn {{ 
+                    background: #007bff; color: white; padding: 10px 20px; 
+                    text-decoration: none; border-radius: 5px; display: inline-block; margin: 10px 0;
+                }}
+                .back-btn {{ 
+                    background: #6c757d; color: white; padding: 10px 20px; 
+                    text-decoration: none; border-radius: 5px; display: inline-block; margin: 10px 0;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>📊 Aggregated Analysis Results</h1>
+                    <h2>File: {file_base}</h2>
+                    <p>Combined statistical analysis from all processed blocks</p>
+                </div>
+                
+                <div>
+                    <a href="/download_aggregate/{file_base}" class="download-btn">📥 Download CSV Results</a>
+                    <a href="/" class="back-btn">← Back to Files</a>
+                </div>
+                
+                <h3>Ensemble Statistics (Mean across all blocks)</h3>
+                {html_table}
+                
+                <div style="margin-top: 20px;">
+                    <h4>Interpretation:</h4>
+                    <ul>
+                        <li><strong>Mean columns:</strong> Average statistics across all blocks</li>
+                        <li><strong>Column values:</strong> Aggregated mean values from all processed blocks</li>
+                        <li><strong>Consistent results:</strong> Shows the overall statistical summary</li>
+                    </ul>
+                </div>
+            </div>
+        </body>
+        </html>
+        '''
+        
+        return aggregate_html
+        
+    except Exception as e:
+        return jsonify({"status": "error", "msg": f"Error aggregating results: {str(e)}"}), 500
+
+@app.route('/download_aggregate/<file_base>')
+def download_aggregate(file_base):
+    """
+    Download the aggregated results as CSV file.
+    """
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        results_dir = os.path.join(base_dir, "data", "results", file_base)
+        csv_filename = f"{file_base}_ensemble_results.csv"
+        
+        return send_from_directory(results_dir, csv_filename, as_attachment=True)
+        
+    except Exception as e:
+        return jsonify({"status": "error", "msg": f"Error downloading file: {str(e)}"}), 500
+
+@app.route('/results/<file_base>')
+def view_results(file_base):
+    """
+    View all individual analysis results for a file.
+    """
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        results_dir = os.path.join(base_dir, "data", "results", file_base)
+        
+        if not os.path.exists(results_dir):
+            return jsonify({"status": "error", "msg": f"No results found for {file_base}"}), 404
+        
+        # Get all result files
+        result_files = [f for f in os.listdir(results_dir) if f.endswith('.txt')]
+        
+        results_html = f'''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Analysis Results for {file_base}</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                .container {{ max-width: 1200px; margin: 0 auto; }}
+                .header {{ background: #f8f9fa; padding: 20px; border-radius: 5px; margin-bottom: 20px; }}
+                .file-list {{ list-style: none; padding: 0; }}
+                .file-item {{ 
+                    background: white; border: 1px solid #ddd; margin: 10px 0; 
+                    padding: 15px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                }}
+                .file-link {{ 
+                    color: #007bff; text-decoration: none; font-weight: bold; 
+                }}
+                .aggregate-btn {{ 
+                    background: #28a745; color: white; padding: 10px 20px; 
+                    text-decoration: none; border-radius: 5px; display: inline-block; margin: 10px 0;
+                }}
+                .back-btn {{ 
+                    background: #6c757d; color: white; padding: 10px 20px; 
+                    text-decoration: none; border-radius: 5px; display: inline-block; margin: 10px 0;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>📋 Individual Analysis Results</h1>
+                    <h2>File: {file_base}</h2>
+                    <p>Individual analysis results for each processed block</p>
+                </div>
+                
+                <div>
+                    <a href="/aggregate/{file_base}" class="aggregate-btn">📊 View Aggregated Results</a>
+                    <a href="/" class="back-btn">← Back to Files</a>
+                </div>
+                
+                <ul class="file-list">
+        '''
+        
+        for result_file in sorted(result_files):
+            results_html += f'''
+                    <li class="file-item">
+                        <a href="/download_result/{file_base}/{result_file}" class="file-link">
+                            📄 {result_file}
+                        </a>
+                        <p>Individual analysis result file</p>
+                    </li>
+            '''
+        
+        results_html += '''
+                </ul>
+            </div>
+        </body>
+        </html>
+        '''
+        
+        return results_html
+        
+    except Exception as e:
+        return jsonify({"status": "error", "msg": f"Error viewing results: {str(e)}"}), 500
+
+@app.route('/download_result/<file_base>/<filename>')
+def download_result(file_base, filename):
+    """
+    Download individual result file.
+    """
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        results_dir = os.path.join(base_dir, "data", "results", file_base)
+        
+        return send_from_directory(results_dir, filename, as_attachment=True)
+        
+    except Exception as e:
+        return jsonify({"status": "error", "msg": f"Error downloading file: {str(e)}"}), 500
 
 @app.route('/upload_block', methods=['POST'])
 def upload_block():
@@ -283,8 +565,6 @@ def upload_block():
     file.save(save_path)
 
     return jsonify({"status": "success", "msg": f"Uploaded {block_id} to {file_base}"})
-
-
 
 if __name__=='__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)

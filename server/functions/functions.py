@@ -1,6 +1,8 @@
 import os
 import psycopg2
 from psycopg2 import sql, errors
+from werkzeug.security import generate_password_hash, check_password_hash
+from config import DB
 
 
 
@@ -178,3 +180,93 @@ def register_blocks_in_db(db_name: str, block_ids: list[str], db_user: str, db_p
 
     cur.close()
     conn.close()
+
+
+def create_users_table():
+    """
+    Create the users table if it does not exist.
+    """
+    conn = psycopg2.connect(
+        dbname=DB['dbname'],
+        user=DB['user'],
+        password=DB['password'],
+        host=DB['host'],
+        port=DB['port']
+    )
+    cur = conn.cursor()
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username VARCHAR(150) UNIQUE NOT NULL,
+            password_hash VARCHAR(255) NOT NULL
+        );
+    ''')
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def add_user(username: str, password: str) -> bool:
+    """
+    Add a new user with a hashed password. Returns True if successful, False if username exists.
+    """
+    password_hash = generate_password_hash(password)
+    conn = None
+    cur = None
+    try:
+        conn = psycopg2.connect(
+            dbname=DB['dbname'],
+            user=DB['user'],
+            password=DB['password'],
+            host=DB['host'],
+            port=DB['port']
+        )
+        cur = conn.cursor()
+        cur.execute('INSERT INTO users (username, password_hash) VALUES (%s, %s);', (username, password_hash))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    except psycopg2.IntegrityError as e:
+        # Duplicate username or other integrity error
+        if conn:
+            conn.rollback()
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+        return False
+    except Exception as e:
+        print(f"Error adding user: {e}")
+        if conn:
+            conn.rollback()
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+        return False
+
+
+def verify_user(username: str, password: str) -> bool:
+    """
+    Verify a user's credentials. Returns True if correct, False otherwise.
+    """
+    try:
+        conn = psycopg2.connect(
+            dbname=DB['dbname'],
+            user=DB['user'],
+            password=DB['password'],
+            host=DB['host'],
+            port=DB['port']
+        )
+        cur = conn.cursor()
+        cur.execute('SELECT password_hash FROM users WHERE username = %s;', (username,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row:
+            return check_password_hash(row[0], password)
+        return False
+    except Exception as e:
+        print(f"Error verifying user: {e}")
+        return False
