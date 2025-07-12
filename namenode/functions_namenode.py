@@ -316,23 +316,39 @@ def reassign_leader_on_disconnect(old_leader_id: str):
                         return
                     followers = result[0]
                     print(f"[DEBUG] Followers: {followers}")
-                    new_leader = followers[0]  # Chọn follower đầu tiên làm leader mới
-                    with conn_file.cursor() as cur_file:
-                        cur_file.execute(
+                    
+                    # Select new leader and calculate remaining followers
+                    new_leader = followers[0]  # Choose first follower as new leader
+                    new_followers = followers[1:] if len(followers) > 1 else []  # ✅ FIX: Define new_followers
+                    print(f"[DEBUG] New leader: {new_leader}, Remaining followers: {new_followers}")
+                    
+                    # Update the block's leader and followers
+                    cur_file.execute(
                         sql.SQL("""
-                        UPDATE {} SET leader = %s, followers = %s, status = 'pending'
+                            UPDATE {} SET leader = %s, followers = %s, status = 'processing'
                             WHERE block_id = %s
                         """).format(sql.Identifier(table)),
-                        (new_leader, new_followerrs, block_id)
+                        (new_leader, new_followers, block_id)  # ✅ FIX: Correct variable name
                     )
                 conn_file.commit()
-            # 4. Notify new leader
+                
+                # 4. Update metadata: Free old leader, assign task to new leader
+                cur.execute(
+                    "UPDATE active_node_manager SET task = 'free' WHERE node_id = %s",
+                    (old_leader_id,)
+                )
+                cur.execute(
+                    "UPDATE active_node_manager SET task = %s WHERE node_id = %s",
+                    (block_id, new_leader)
+                )
+                conn_meta.commit()
+                
+                # 5. Notify new leader
                 try:
                     send_to_datanode(new_leader, {
                         'type': 'promote_to_leader',
                         'block_id': block_id,
                         'file': file_base,
-                        
                     })
                     print(f"[DEBUG] Promotion notification sent to {new_leader}")
                 except Exception as e:
@@ -356,4 +372,3 @@ def reassign_leader_on_disconnect(old_leader_id: str):
             conn_meta.close()
         print(f"[DEBUG] === End reassign_leader_on_disconnect ===")
 
-    
