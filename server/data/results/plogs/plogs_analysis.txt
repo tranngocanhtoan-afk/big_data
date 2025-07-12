@@ -1,0 +1,71 @@
+==== Analysis Report for: plogs_block1.csv ====
+File size: 10.00 MB (10,485,681 bytes)
+Analysis date: 2025-07-12 16:00:54
+Original rows: 79123, columns: 8
+============================================================
+
+STATISTICAL ANALYSIS:
+--------------------------------------------------
+Number of rows: 79123
+Number of columns: 8
+Column names: ['start_time', 'time_on_task', 'answer_before_tutoring', 'fraction_of_hints_used', 'attempt_count', 'answer_given', 'problem_completed', 'correct']
+Basic statistics:
+                          count unique    top   freq          mean           std       min       25%       50%       75%       max
+start_time              79123.0                       39485.612072  22795.500978       0.0   19750.5   39477.0   59223.5   78987.0
+time_on_task            79123.0                               -0.0      1.000006  -0.45892 -0.407772 -0.323712 -0.068316  6.599668
+answer_before_tutoring  79123.0                           0.941774      0.234171       0.0       1.0       1.0       1.0       1.0
+fraction_of_hints_used  79123.0                               -0.0      1.000006 -0.126747 -0.126747 -0.126747 -0.126747  7.889728
+attempt_count           79123.0                               -0.0      1.000006 -0.512404 -0.512404 -0.512404  0.645469  4.119089
+answer_given            79123.0      2  False  66902                                                                              
+problem_completed       79123.0      2   True  78855                                                                              
+correct                 79123.0                           0.666342      0.471522       0.0       0.0       1.0       1.0       1.0
+
+Unique value statistics per column:
+Column: start_time | Unique: 78988
+Column: time_on_task | Unique: 53272
+Column: answer_before_tutoring | Unique: 2
+Column: fraction_of_hints_used | Unique: 2
+Column: attempt_count | Unique: 5
+Column: answer_given | Unique: 2
+Column: problem_completed | Unique: 2
+Column: correct | Unique: 2
+
+SAMPLE DATA (First 20 rows after preprocessing):
+--------------------------------------------------
+ start_time  time_on_task  answer_before_tutoring  fraction_of_hints_used  attempt_count  answer_given  problem_completed  correct
+          0     -0.309886                       1               -0.126747      -0.512404         False              False        0
+          1     -0.275587                       1               -0.126747      -0.512404         False               True        1
+          2      0.321959                       1               -0.126747      -0.512404         False               True        1
+          3     -0.435666                       1               -0.126747      -0.512404         False               True        1
+          4     -0.336798                       1               -0.126747      -0.512404         False               True        1
+          5     -0.307067                       1               -0.126747      -0.512404         False               True        1
+          6     -0.436829                       1               -0.126747      -0.512404         False               True        1
+          7      0.918035                       1               -0.126747       2.961215          True               True        0
+         10     -0.458920                       1               -0.126747      -0.512404         False               True        1
+      78618     -0.279666                       1               -0.126747       0.645469         False               True        0
+      78619     -0.394732                       1               -0.126747       1.803342         False               True        0
+         11      6.599668                       1               -0.126747      -0.512404         False               True        1
+         18     -0.353052                       1               -0.126747       0.645469         False               True        0
+         19     -0.338902                       1               -0.126747      -0.512404         False               True        1
+         20     -0.395509                       1               -0.126747      -0.512404         False               True        1
+          8     -0.052708                       1               -0.126747      -0.512404         False               True        1
+          9     -0.316748                       1               -0.126747      -0.512404         False               True        1
+         12     -0.390540                       1               -0.126747      -0.512404         False               True        1
+         13     -0.403039                       1               -0.126747      -0.512404         False               True        1
+         14     -0.248197                       1               -0.126747       2.961215          True               True        0
+
+DATA TYPES:
+--------------------------------------------------
+start_time                  int32
+time_on_task              float64
+answer_before_tutoring      int32
+fraction_of_hints_used    float64
+attempt_count             float64
+answer_given                 bool
+problem_completed            bool
+correct                     int32
+
+MEMORY USAGE:
+--------------------------------------------------
+Memory usage: 3554.35 KB
+Shape: 79123 rows x 8 columns

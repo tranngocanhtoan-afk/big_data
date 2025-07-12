@@ -1,0 +1,59 @@
+==== Analysis Report for: alogs_block1.csv ====
+File size: 10.00 MB (10,485,701 bytes)
+Analysis date: 2025-07-12 21:20:07
+Original rows: 142055, columns: 4
+============================================================
+
+STATISTICAL ANALYSIS:
+--------------------------------------------------
+Number of rows: 142055
+Number of columns: 4
+Column names: ['start_time', 'mean_correct', 'time_on_task', 'assignment_completed']
+Basic statistics:
+                         count unique   top    freq          mean           std       min       25%       50%       75%       max
+start_time            142055.0                       71018.260603  41003.615006       0.0   35507.5   71019.0  106528.5  142035.0
+mean_correct          142055.0                                0.0      1.000004 -1.950579 -0.525254  0.139897  0.836723  1.185136
+time_on_task          142055.0                                0.0      1.000004 -0.898359 -0.650565 -0.345304  0.250288  4.342649
+assignment_completed  142055.0      2  True  110029                                                                              
+
+Unique value statistics per column:
+Column: start_time | Unique: 142036
+Column: mean_correct | Unique: 316
+Column: time_on_task | Unique: 126119
+Column: assignment_completed | Unique: 2
+
+SAMPLE DATA (First 20 rows after preprocessing):
+--------------------------------------------------
+ start_time  mean_correct  time_on_task  assignment_completed
+          0     -0.069150     -0.115819                  True
+          1     -0.069150      0.301061                  True
+          2      0.244421      0.950279                  True
+          3     -0.069150      2.160678                  True
+          4     -0.696293     -0.656233                  True
+          5     -1.950579     -0.135084                  True
+          6     -0.069150     -0.322299                  True
+          7     -0.696293     -0.559209                  True
+          8      0.244421     -0.172782                  True
+          9      0.557993     -0.188073                  True
+         10     -1.480222      0.839152                 False
+         11      1.185136     -0.610407                  True
+         12      0.244421      0.957348                  True
+         13     -1.427960     -0.747884                  True
+         14      0.139897     -0.345304                 False
+         15      0.139897     -0.779199                  True
+         16     -1.950579     -0.875695                  True
+         17      0.139897     -0.345304                 False
+         18      0.139897     -0.345304                 False
+         19     -0.382722      0.365403                 False
+
+DATA TYPES:
+--------------------------------------------------
+start_time                int64
+mean_correct            float64
+time_on_task            float64
+assignment_completed       bool
+
+MEMORY USAGE:
+--------------------------------------------------
+Memory usage: 3468.27 KB
+Shape: 142055 rows x 4 columns

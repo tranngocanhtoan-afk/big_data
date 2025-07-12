@@ -2,6 +2,8 @@ import psycopg2
 from psycopg2 import pool, sql
 from config import DB
 import time
+import socket
+import json
 
 # ─── Connection Pool ───────────────────────────────────────────────────────────
 # Khởi connection pool khi module load
@@ -219,8 +221,8 @@ def assign_task_auto(task: str) -> bool:
     send_to_datanode(leader, {
         'type': 'task',
         'role': 'leader',
-        'block_id': task,
-        'file': file_base
+        'block_id': task,  #task la alogs_block1.csv
+        'file': file_base   #filebase o day la alogs
     })
     for nd in followers:
         send_to_datanode(nd, {
@@ -231,21 +233,6 @@ def assign_task_auto(task: str) -> bool:
         })
 
     return True
-
-
-def process_file_tasks(file_base: str, poll_interval: float = 2.0) -> None:
-    """
-    Với mỗi block trong file_base, chờ đến khi có node free rồi gọi assign_task_auto.
-    """
-    block_ids = get_file_block_ids(file_base)
-    for blk in block_ids:
-        # đợi cho đến khi assign thành công
-        while True:
-            if assign_task_auto(blk):
-                print(f"Assigned {blk}")
-                break
-            # chưa có node free, chờ
-            time.sleep(poll_interval)
 
 
 def send_to_datanode(node_id: str, payload: dict):
@@ -269,69 +256,141 @@ def get_table_name_from_block_id(block_id: str) -> str:
     table_name = file_base.replace('.', '_')
     return table_name
 
-
 def reassign_leader_on_disconnect(old_leader_id: str):
     """
-    Khi node leader disconnect, chuyển quyền leader cho follower đầu tiên,
-    cập nhật lại bảng block-manager và active_node_manager.
+    Khi node leader disconnect, chuyển quyền leader cho follower đầu tiên (nếu có),
+    và remove node này khỏi followers của tất cả các block trong mọi file DB.
     """
-    conn_meta = psycopg2.connect(**DB)
+    import psycopg2
+    from psycopg2 import sql
+    import glob, os
+
+    print(f"[DEBUG] === Starting reassign_leader_on_disconnect ===")
+    print(f"[DEBUG] Old leader ID: {old_leader_id}")
+
+    conn_meta = None
     try:
-        with conn_meta.cursor() as cur:
-            # 1. Lấy block node này đang làm leader (task)
-            cur.execute("""
-                SELECT task FROM active_node_manager
-                 WHERE node_id = %s
-            """, (old_leader_id,))
-            row = cur.fetchone()
-            if not row or not row[0]:
-                print(f"Node {old_leader_id} không có task để reassign.")
-                return
-            block_id = row[0]
+        print(f"[DEBUG] Connecting to metadata database...")
+        conn_meta = psycopg2.connect(**DB)
+        print(f"[DEBUG] Successfully connected to metadata database")
 
-            # 2. Xác định table
-            table = get_table_name_from_block_id(block_id)
+        # === 1. Kiểm tra node đang làm leader block nào không ===
+        block_id = None
+        file_base = None
+        table = None
+        new_leader = None
+        try:
+            with conn_meta.cursor() as cur:
+                cur.execute("SELECT task FROM active_node_manager WHERE node_id = %s", (old_leader_id,))
+                row = cur.fetchone()
+                if row and row[0] and row[0] != 'free':
+                    block_id = row[0]
+                    file_base = block_id.rsplit('.csv', 1)[0].rsplit('_block', 1)[0]
+                    table = file_base
+        except Exception as e:
+            print(f"[ERROR] Metadata query failed: {e}")
 
-            # 3. Lấy followers hiện tại
-            cur.execute(
-                sql.SQL('SELECT followers FROM {} WHERE block_id = %s').format(
-                    sql.Identifier(table)),
-                (block_id,))
-            result = cur.fetchone()
-            if not result or not result[0]:
-                print(f"Block {block_id} không có followers.")
-                return
-            followers = result[0]
-            if not followers:
-                print(f"Block {block_id} không có followers.")
-                return
+        # === 2. Nếu đang làm leader, chuyển quyền leader cho follower đầu tiên ===
+        if block_id and file_base:
+            print(f"[DEBUG] Node is leader of block {block_id}, file_base {file_base}")
 
-            # 4. Chọn follower đầu tiên làm leader mới
-            new_leader = followers[0]
-            new_followers = followers[1:] if len(followers) > 1 else []
+            try:
+                conn_file = get_file_conn(file_base)
+                with conn_file.cursor() as cur_file:
+                    cur_file.execute(
+                        sql.SQL("SELECT followers FROM {} WHERE block_id = %s").format(sql.Identifier(table)),
+                        (block_id,)
+                    )
+                    result = cur_file.fetchone()
+                    followers = result[0] if result and result[0] else []
 
-            # 5. Update block-manager table
-            cur.execute(
-                sql.SQL("""
-                    UPDATE {} SET leader = %s, followers = %s, status = 'processing'
-                     WHERE block_id = %s
-                """).format(sql.Identifier(table)),
-                (new_leader, new_followers, block_id)
-            )
+                    if followers:
+                        new_leader = followers[0]
+                        new_followers = followers[1:] if len(followers) > 1 else []
 
-            # 6. Update active_node_manager cho leader mới
-            cur.execute(
-                "UPDATE active_node_manager SET task = %s WHERE node_id = %s",
-                (block_id, new_leader)
-            )
-            print(f"Reassigned leader of {block_id} to {new_leader}")
+                        # Update leader, followers của block này
+                        cur_file.execute(
+                            sql.SQL("UPDATE {} SET leader = %s, followers = %s, status = 'pending' WHERE block_id = %s")
+                            .format(sql.Identifier(table)),
+                            (new_leader, new_followers, block_id)
+                        )
+                        conn_file.commit()
 
-            # 7. Optionally xóa task của node cũ (vì đã disconnect)
-            cur.execute(
-                "UPDATE active_node_manager SET task = 'free' WHERE node_id = %s",
-                (old_leader_id,)
-            )
+                        # Update active_node_manager: free old leader, assign task cho new leader
+                        with conn_meta.cursor() as cur:
+                            cur.execute("UPDATE active_node_manager SET task = 'free' WHERE node_id = %s", (old_leader_id,))
+                            cur.execute("UPDATE active_node_manager SET task = %s WHERE node_id = %s", (block_id, new_leader))
+                            conn_meta.commit()
 
-        conn_meta.commit()
+                        print(f"[DEBUG] Reassigned {block_id}: new leader = {new_leader}, followers = {new_followers}")
+
+                        # Notify new leader
+                        try:
+                            send_to_datanode(new_leader, {
+                                'type': 'promote_to_leader',
+                                'block_id': block_id,
+                                'file_base': file_base,
+                            })
+                            print(f"[DEBUG] Promotion notification sent to {new_leader}")
+                        except Exception as e:
+                            print(f"[WARNING] Failed to notify new leader {new_leader}: {e}")
+                    else:
+                        print(f"[DEBUG] Block {block_id} has no followers to promote.")
+                conn_file.close()
+            except Exception as e:
+                print(f"[ERROR] FileDB leader reassignment error: {e}")
+
+        # === 3. Remove old_leader_id khỏi mọi followers trong toàn bộ file DB ===
+        print(f"[DEBUG] Start removing {old_leader_id} from all followers lists in ALL files...")
+        db_folder = "."  # Change this if your databases are in a subfolder
+        db_files = glob.glob(os.path.join(db_folder, "*.db")) + glob.glob(os.path.join(db_folder, "*.sqlite")) + glob.glob(os.path.join(db_folder, "*.pgsql")) + glob.glob(os.path.join(db_folder, "*")) # edit pattern if needed
+
+        # Nếu dùng Postgres multi-database (thường mỗi file_base là 1 database tên 'alogs', 'plogs'...), có thể quét qua danh sách tên file_base hoặc lưu lại ở đâu đó
+        # Ở đây ví dụ: bạn có một list các file_base (table/database) cần check, hoặc scan qua các file_name trong thư mục dữ liệu nếu dùng SQLite
+        # Nếu Postgres, có thể truy vấn pg_database để lấy danh sách db, rồi lặp
+
+        # Dưới đây là ví dụ quét qua các file_base đã biết
+        # Sửa lại đoạn này cho phù hợp hệ thống của bạn!
+        all_file_bases = []
+        try:
+            # Cách 1: Lưu sẵn danh sách file_base ở config hoặc db
+            # all_file_bases = ['alogs', 'plogs', ...] 
+            
+            # Cách 2: Truy vấn tất cả db từ Postgres (nếu bạn dùng multi-db)
+            with psycopg2.connect(**DB) as conn_sys:
+                with conn_sys.cursor() as cur:
+                    cur.execute("SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres')")  # exclude template DB
+                    all_file_bases = [row[0] for row in cur.fetchall()]
+
+            print(f"[DEBUG] All file_bases found: {all_file_bases}")
+        except Exception as e:
+            print(f"[WARNING] Could not get all file_bases: {e}")
+
+        for file_base in all_file_bases:
+            print(f"[DEBUG] Processing file_base {file_base}")
+            try:
+                conn_file = get_file_conn(file_base)
+                with conn_file.cursor() as cur_file:
+                    # Xóa node khỏi followers ở mọi block
+                    cur_file.execute(
+                        sql.SQL("UPDATE {} SET followers = array_remove(followers, %s) WHERE %s = ANY(followers)")
+                        .format(sql.Identifier(file_base)),
+                        (old_leader_id, old_leader_id)
+                    )
+                    affected = cur_file.rowcount
+                    if affected:
+                        print(f"[DEBUG] Removed {old_leader_id} from followers in {affected} blocks of {file_base}")
+                conn_file.commit()
+                conn_file.close()
+            except Exception as e:
+                print(f"[WARNING] Could not remove {old_leader_id} from followers in {file_base}: {e}")
+
+    except Exception as e:
+        print(f"[ERROR] Exception in reassign_leader_on_disconnect: {e}")
+        if conn_meta:
+            conn_meta.rollback()
+        raise
     finally:
-        conn_meta.close()
+        if conn_meta:
+            conn_meta.close()
+        print(f"[DEBUG] === End reassign_leader_on_disconnect ===")
