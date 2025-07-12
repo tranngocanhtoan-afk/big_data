@@ -120,7 +120,31 @@ def start_task_listener_bg(listen_host='0.0.0.0', listen_port=7000):
     t = threading.Thread(target=task_listener, args=(listen_host, listen_port), daemon=True)
     t.start()
     return t
-
+def report_node_free(file_base: str):
+    """
+    Report task completion to NameNode
+    """
+    try:
+        # Connect to NameNode
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.connect(('127.0.0.1', 5001))  # NameNode address
+            
+            # Get node_id (we need to know the port)
+            # For now, we'll use a placeholder - in real implementation, 
+            # this should be passed from the main datanode.py
+            node_id = f"127.0.0.1:7000"  # This should be dynamic
+            
+            # Send completion message
+            free_msg = {
+                "type": "node_free",
+                "id": node_id,
+                "file": file_base
+            }
+            resp = send_message(sock, free_msg)
+            print(f"[DataNode] Free node reported → {resp}")
+            
+    except Exception as e:
+        print(f"[DataNode] Failed to report task completion: {e}")
 
 def upload_block_to_server(server_ip, server_port, file_base, block_id, block_path):
     """
@@ -163,6 +187,7 @@ def print_file_header(dest_dir: str, file_base: str, block_id: str):
                 for i, line in enumerate(f):
                     if i < 5:  # Show first 5 lines
                         lines.append(line.strip())
+                        
                     else:
                         break
                 print(f"[DataNode] 📄 File header for {block_id}:")

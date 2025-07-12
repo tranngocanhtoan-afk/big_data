@@ -92,7 +92,10 @@ def handle_client(conn, addr):
                             err = {'status':'error', 'error': str(e)}
                             conn.sendall(json.dumps(err).encode('utf-8'))
                             print(f"[NameNode] Task completion error: {e}")
-
+                    elif typ == 'node_free':
+                        file_base = msg.get('file')
+                        node_id = msg.get('node_id')
+                        handle_node_free(node_id, file_base)
                     elif typ == 'heartbeat':
                         # Enhanced heartbeat with task status and processing status
                         if node_id in datanodes:
@@ -134,7 +137,7 @@ def handle_client(conn, addr):
 
         # connection closed: clean up any dead nodes
         print(f"[NameNode] Disconnected {addr}")
-      
+
 def handle_task_completion(node_id: str, block_id: str, role: str = 'leader'):
     """
     Handle task completion - reset node status and immediately assign new task if available
@@ -142,37 +145,23 @@ def handle_task_completion(node_id: str, block_id: str, role: str = 'leader'):
     conn_meta = psycopg2.connect(**DB)
     try:
         with conn_meta.cursor() as cur:
-            print(f"[DEBUG] Starting leader task completion for node_id: {node_id}, block_id: {block_id}")
-                
-                # Reset leader node status to free
-            cur.execute(
-                    "UPDATE active_node_manager SET task = 'free' WHERE node_id = %s",
-                    (node_id,)
-                )
-        
-            print(f"[DEBUG] Updated node {node_id} status to 'free' in active_node_manager")
-                
-            send_release_to_datanode(node_id, block_id, role = 'leader')
-            print(f"[DEBUG] Sent release signal to datanode {node_id} for block {block_id} (leader role)")
-                
+            if role == 'leader':
+                send_release_to_datanode(node_id, block_id, role = 'leader')
                 # Get followers for this block to reset their storage
-            file_base = block_id.rsplit('.csv',1)[0].rsplit('_block',1)[0]
-            print(f"[DEBUG] Extracted file_base: {file_base} from block_id: {block_id}")
-                
-            conn_file = get_file_conn(file_base)
-            try:
-                with conn_file.cursor() as cur_file:
-                    tbl = sql.Identifier(file_base)
-                    cur_file.execute(
+                file_base = block_id.rsplit('.csv',1)[0].rsplit('_block',1)[0]
+                conn_file = get_file_conn(file_base)
+                try:
+                    with conn_file.cursor() as cur_file:
+                        tbl = sql.Identifier(file_base)
+                        cur_file.execute(
                             sql.SQL("SELECT followers FROM {} WHERE block_id = %s").format(tbl),
                             (block_id,)
                         )
-                    result = cur_file.fetchone()
-                    followers = result[0] if result and result[0] else []
-                    print(f"[DEBUG] Retrieved followers for block {block_id}: {followers}")
+                        result = cur_file.fetchone()
+                        followers = result[0] if result and result[0] else []
                         
                         # Update block status to completed
-                    cur_file.execute(
+                        cur_file.execute(
                             sql.SQL("""
                                 UPDATE {} SET status = 'completed',
                                     leader = NULL,
@@ -182,20 +171,14 @@ def handle_task_completion(node_id: str, block_id: str, role: str = 'leader'):
                             """).format(tbl),
                             (block_id,)
                         )
-                    print(f"[DEBUG] Updated block {block_id} status to 'completed' and cleared leader/followers")
                     conn_file.commit()
-                    print(f"[DEBUG] Successfully committed changes to file database for {file_base}")
-            except Exception as e:
-                    print(f"[DEBUG ERROR] Exception in file database operations: {e}")
-                    raise
-            finally:
+                finally:
                     conn_file.close()
-                    print(f"[DEBUG] Closed file database connection for {file_base}")
                 
                 # Reset storage for followers (remove this block from their storage)
-            for follower in followers:
-                send_release_to_datanode(follower, block_id, role = 'storage')
-                cur.execute(
+                for follower in followers:
+                    send_release_to_datanode(follower, block_id, role = 'storage')
+                    cur.execute(
                         """
                         UPDATE active_node_manager SET
                           storage = CASE
@@ -206,7 +189,7 @@ def handle_task_completion(node_id: str, block_id: str, role: str = 'leader'):
                                     END
                          WHERE node_id = %s;
                         """, 
-                    (block_id, f"{block_id},%", f"{block_id},", f"%,{block_id}", f",{block_id}", follower)
+                        (block_id, f"{block_id},%", f"{block_id},", f"%,{block_id}", f",{block_id}", follower)
                     )
                     
                 print(f"[NameNode] Task {block_id} completed by {node_id} (leader), node reset to free")
@@ -214,14 +197,11 @@ def handle_task_completion(node_id: str, block_id: str, role: str = 'leader'):
                     print(f"[NameNode] Reset storage for followers: {followers}")
                 
                 # Immediately try to assign new task to this node
-                assign_next_available_task(node_id, file_base)
-                
-            
+
         conn_meta.commit()
         
     finally:
         conn_meta.close()
-
 
 def send_release_to_datanode(node_id: str, block_id: str, role: str):
     """
@@ -547,11 +527,24 @@ def monitor_datanodes():
                 state = "alive" if age < HEARTBEAT_TIMEOUT else "dead"
                 print(f"  - {node}: last heartbeat {age:.1f}s ago → {state}")
                 if state == "dead":
-                    reassign_leader_on_disconnect(node)
-                    remove_node(node)
+                    reassign_leader_on_disconnect(node) # tu dong giao task khi node mat ket noi 30 lan thu
+                    remove_node(node) # xoa khoi active_node_manager
                     del datanodes[node]
                     print(f"    → Removed dead DataNode '{node}'")
             print("========================")
+def handle_node_free(node_id: str, file_base: str):
+    conn_meta = psycopg2.connect(**DB)
+    try :
+        with conn_meta.cursor() as cur:
+            cur.execute(
+                "UPDATE active_node_manager SET task = 'free' WHERE node_id = %s",
+                (node_id,)
+            )
+            conn_meta.commit()
+            assign_next_available_task(node_id, file_base)
+
+    finally:
+        conn_meta.close()
 
 def main():
     # ensure the metadata table exists
